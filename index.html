@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brick Breaker - HTML5</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #0a0a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: 'Press Start 2P', cursive;
+        }
+        canvas {
+            background: linear-gradient(to bottom, #0a0a2e, #000010);
+            border-left: 3px solid yellow;
+            border-top: 3px solid yellow;
+            border-right: 3px solid yellow;
+            border-bottom: none;
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="700" height="600"></canvas>
+
+    <script>
+        // === CONSTANTS ===
+        const CONSTANTS = {
+            WINDOW_WIDTH: 700,
+            WINDOW_HEIGHT: 600,
+            PADDLE_Y: 550,
+            PADDLE_WIDTH: 100,
+            PADDLE_HEIGHT: 12,
+            BALL_SIZE: 10, // radius
+            MAX_SPEED_MULT: 3.0,
+            BASE_DX: -2,
+            BASE_DY: -3
+        };
+
+        const STATE = {
+            START: 0,
+            PLAYING: 1,
+            PAUSED: 2,
+            LEVEL_COMPLETE: 3,
+            GAME_OVER: 4,
+            WIN: 5
+        };
+
+        // === WEB AUDIO API SOUND SYSTEM ===
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AudioContext();
+
+        /**
+         * Generates synthetic sounds using the Web Audio API based on the event type.
+         */
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            const now = audioCtx.currentTime;
+            
+            switch (type) {
+                case 'paddleHit':
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(300, now);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+                    osc.start(now);
+                    osc.stop(now + 0.08);
+                    break;
+                case 'brickBreak':
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(600, now);
+                    osc.frequency.exponentialRampToValueAtTime(300, now + 0.06);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.06);
+                    osc.start(now);
+                    osc.stop(now + 0.06);
+                    break;
+                case 'wallBounce':
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(150, now);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
+                    osc.start(now);
+                    osc.stop(now + 0.05);
+                    break;
+                case 'lifeLost':
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(400, now);
+                    osc.frequency.exponentialRampToValueAtTime(100, now + 0.4);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+                    osc.start(now);
+                    osc.stop(now + 0.4);
+                    break;
+                case 'gameOver':
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(200, now);
+                    osc.frequency.exponentialRampToValueAtTime(50, now + 1.0);
+                    gainNode.gain.setValueAtTime(0.2, now);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, now + 1.0);
+                    osc.start(now);
+                    osc.stop(now + 1.0);
+                    break;
+                case 'levelComplete':
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(300, now);
+                    osc.frequency.setValueAtTime(400, now + 0.1);
+                    osc.frequency.setValueAtTime(500, now + 0.2);
+                    osc.frequency.setValueAtTime(600, now + 0.3);
+                    gainNode.gain.setValueAtTime(0.1, now);
+                    gainNode.gain.linearRampToValueAtTime(0, now + 0.5);
+                    osc.start(now);
+                    osc.stop(now + 0.5);
+                    break;
+            }
+        }
+
+        // === ENTITY CLASSES ===
+        
+        class Paddle {
+            constructor() {
+                this.width = CONSTANTS.PADDLE_WIDTH;
+                this.height = CONSTANTS.PADDLE_HEIGHT;
+                this.x = (CONSTANTS.WINDOW_WIDTH - this.width) / 2;
+                this.y = CONSTANTS.PADDLE_Y;
+                this.speed = 8;
+                this.movingLeft = false;
+                this.movingRight = false;
+            }
+
+            draw(ctx) {
+                // Base green paddle
+                ctx.fillStyle = '#00FF88';
+                ctx.beginPath();
+                ctx.roundRect(this.x, this.y, this.width, this.height, 6);
+                ctx.fill();
+
+                // Lighter glossy stripe on top half
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.beginPath();
+                ctx.roundRect(this.x, this.y, this.width, this.height / 3, 6);
+                ctx.fill();
+            }
+
+            update() {
+                if (this.movingLeft && this.x > 0) {
+                    this.x -= this.speed;
+                } else if (this.movingRight && this.x < CONSTANTS.WINDOW_WIDTH - this.width) {
+                    this.x += this.speed;
+                }
+            }
+
+            reset() {
+                this.x = (CONSTANTS.WINDOW_WIDTH - this.width) / 2;
+            }
+        }
+
+        class Ball {
+            constructor() {
+                this.radius = CONSTANTS.BALL_SIZE;
+                this.speedMult = 1.0;
+                this.trail = [];
+                this.stuck = true;
+                this.reset();
+            }
+
+            reset(paddleX, paddleWidth) {
+                if (paddleX !== undefined) {
+                    this.x = paddleX + paddleWidth / 2;
+                    this.y = CONSTANTS.PADDLE_Y - this.radius;
+                } else {
+                    this.x = CONSTANTS.WINDOW_WIDTH / 2;
+                    this.y = CONSTANTS.PADDLE_Y - this.radius;
+                }
+                this.dx = CONSTANTS.BASE_DX;
+                this.dy = CONSTANTS.BASE_DY;
+                this.stuck = true;
+                this.trail = [];
+            }
+
+            launch() {
+                if (this.stuck) {
+                    this.stuck = false;
+                    // Resume audio context on user interaction to comply with browser policies
+                    if (audioCtx.state === 'suspended') audioCtx.resume();
+                }
+            }
+
+            increaseSpeed() {
+                if (this.speedMult < CONSTANTS.MAX_SPEED_MULT) {
+                    this.speedMult *= 1.1;
+                }
+            }
+
+            draw(ctx) {
+                // Draw trailing effect
+                for (let i = 0; i < this.trail.length; i++) {
+                    const pos = this.trail[i];
+                    const alpha = (i + 1) / this.trail.length * 0.4;
+                    ctx.fillStyle = `rgba(255, 255, 0, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, this.radius * 0.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Draw ball glow (radial gradient)
+                const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.radius * 1.5);
+                gradient.addColorStop(0, '#FFFFFF');
+                gradient.addColorStop(0.3, '#FFFF00');
+                gradient.addColorStop(1, 'rgba(255, 200, 0, 0)');
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius * 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Draw solid yellow core
+                ctx.fillStyle = '#FFFF00';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Small white highlight
+                ctx.fillStyle = '#FFFFFF';
+                ctx.beginPath();
+                ctx.arc(this.x - 3, this.y - 3, this.radius / 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            update(paddle) {
+                if (this.stuck) {
+                    this.x = paddle.x + paddle.width / 2;
+                    this.y = paddle.y - this.radius;
+                    return;
+                }
+
+                // Add to trail history
+                this.trail.push({ x: this.x, y: this.y });
+                if (this.trail.length > 3) this.trail.shift();
+
+                // Apply velocity
+                this.x += this.dx * this.speedMult;
+                this.y += this.dy * this.speedMult;
+            }
+        }
+
+        class MapGenerator {
+            constructor(rows, cols) {
+                this.rows = rows;
+                this.cols = cols;
+                this.map = [];
+                this.totalBricks = rows * cols;
+                this.brickWidth = 540 / cols;
+                this.brickHeight = 150 / rows;
+                this.offsetX = 80;
+                this.offsetY = 60; // Slightly lower for HUD
+                
+                this.colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#F9CA24', '#686DE0'];
+
+                for (let r = 0; r < rows; r++) {
+                    this.map[r] = [];
+                    for (let c = 0; c < cols; c++) {
+                        this.map[r][c] = 1; // 1 means brick is active
+                    }
+                }
+            }
+
+            draw(ctx) {
+                for (let r = 0; r < this.rows; r++) {
+                    for (let c = 0; c < this.cols; c++) {
+                        if (this.map[r][c] > 0) {
+                            const bX = c * this.brickWidth + this.offsetX;
+                            const bY = r * this.brickHeight + this.offsetY;
+
+                            // Fill Base Color
+                            ctx.fillStyle = this.colors[r % this.colors.length];
+                            ctx.fillRect(bX, bY, this.brickWidth, this.brickHeight);
+
+                            // Lighter top stripe for gloss
+                            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+                            ctx.fillRect(bX, bY, this.brickWidth, this.brickHeight / 3);
+                            
+                            // Black outline
+                            ctx.strokeStyle = '#000000';
+                            ctx.lineWidth = 2;
+                            ctx.strokeRect(bX, bY, this.brickWidth, this.brickHeight);
+                        }
+                    }
+                }
+            }
+
+            setBrickValue(val, r, c) {
+                if (this.map[r][c] > 0 && val === 0) {
+                    this.totalBricks--;
+                }
+                this.map[r][c] = val;
+            }
+        }
+
+        // === GAME STATE MANAGER ===
+        class Game {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.state = STATE.START;
+                this.score = 0;
+                this.bestScore = localStorage.getItem('brickBreakerBestScore') || 0;
+                this.lives = 3;
+                this.level = 1;
+                this.bricksBrokenThisLevel = 0;
+                
+                this.paddle = new Paddle();
+                this.ball = new Ball();
+                this.map = null;
+
+                this.bindEvents();
+                this.loop = this.loop.bind(this);
+                requestAnimationFrame(this.loop);
+            }
+
+            initLevel() {
+                let rows, cols;
+                if (this.level === 1) { rows = 3; cols = 7; }
+                else if (this.level === 2) { rows = 4; cols = 8; }
+                else { rows = 5; cols = 9; }
+                
+                this.map = new MapGenerator(rows, cols);
+                this.bricksBrokenThisLevel = 0;
+                this.paddle.reset();
+                this.ball.reset(this.paddle.x, this.paddle.width);
+            }
+
+            bindEvents() {
+                window.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowLeft') this.paddle.movingLeft = true;
+                    if (e.key === 'ArrowRight') this.paddle.movingRight = true;
+                    
+                    if (e.key === ' ') {
+                        if (this.state === STATE.PLAYING && this.ball.stuck) {
+                            this.ball.launch();
+                        }
+                    }
+
+                    if (e.key.toLowerCase() === 'p') {
+                        if (this.state === STATE.PLAYING) {
+                            this.state = STATE.PAUSED;
+                        } else if (this.state === STATE.PAUSED) {
+                            this.state = STATE.PLAYING;
+                        }
+                    }
+
+                    if (e.key === 'Enter') {
+                        if (this.state === STATE.START) {
+                            this.score = 0;
+                            this.lives = 3;
+                            this.level = 1;
+                            this.ball.speedMult = 1.0;
+                            this.initLevel();
+                            this.state = STATE.PLAYING;
+                        } else if (this.state === STATE.GAME_OVER || this.state === STATE.WIN) {
+                            this.state = STATE.START;
+                        } else if (this.state === STATE.LEVEL_COMPLETE) {
+                            this.level++;
+                            this.initLevel();
+                            this.state = STATE.PLAYING;
+                        }
+                    }
+                });
+
+                window.addEventListener('keyup', (e) => {
+                    if (e.key === 'ArrowLeft') this.paddle.movingLeft = false;
+                    if (e.key === 'ArrowRight') this.paddle.movingRight = false;
+                });
+            }
+
+            update() {
+                if (this.state !== STATE.PLAYING) return;
+
+                this.paddle.update();
+                this.ball.update(this.paddle);
+
+                if (!this.ball.stuck) {
+                    // Wall collisions (Left & Right)
+                    if (this.ball.x - this.ball.radius < 0) {
+                        this.ball.x = this.ball.radius;
+                        this.ball.dx = -this.ball.dx;
+                        playSound('wallBounce');
+                    } else if (this.ball.x + this.ball.radius > CONSTANTS.WINDOW_WIDTH) {
+                        this.ball.x = CONSTANTS.WINDOW_WIDTH - this.ball.radius;
+                        this.ball.dx = -this.ball.dx;
+                        playSound('wallBounce');
+                    }
+
+                    // Top wall collision (under HUD)
+                    if (this.ball.y - this.ball.radius < 30) {
+                        this.ball.y = this.ball.radius + 30;
+                        this.ball.dy = -this.ball.dy;
+                        playSound('wallBounce');
+                    }
+
+                    // Paddle collision
+                    if (this.ball.dy > 0 && 
+                        this.ball.y + this.ball.radius >= this.paddle.y && 
+                        this.ball.y - this.ball.radius <= this.paddle.y + this.paddle.height &&
+                        this.ball.x >= this.paddle.x && 
+                        this.ball.x <= this.paddle.x + this.paddle.width) {
+                        
+                        this.ball.dy = -this.ball.dy;
+                        this.ball.y = this.paddle.y - this.ball.radius;
+                        
+                        // Add some english based on hit position relative to paddle center
+                        let hitPoint = this.ball.x - (this.paddle.x + this.paddle.width / 2);
+                        this.ball.dx = hitPoint * 0.05 + CONSTANTS.BASE_DX * Math.sign(this.ball.dx || 1) * 0.5;
+                        
+                        playSound('paddleHit');
+                    }
+
+                    // Brick collision
+                    brickLoop: for (let r = 0; r < this.map.rows; r++) {
+                        for (let c = 0; c < this.map.cols; c++) {
+                            if (this.map.map[r][c] > 0) {
+                                const bX = c * this.map.brickWidth + this.map.offsetX;
+                                const bY = r * this.map.brickHeight + this.map.offsetY;
+                                
+                                // Simple AABB boundary checking
+                                let testX = this.ball.x;
+                                let testY = this.ball.y;
+                                
+                                if (this.ball.x < bX) testX = bX;
+                                else if (this.ball.x > bX + this.map.brickWidth) testX = bX + this.map.brickWidth;
+                                
+                                if (this.ball.y < bY) testY = bY;
+                                else if (this.ball.y > bY + this.map.brickHeight) testY = bY + this.map.brickHeight;
+                                
+                                let distX = this.ball.x - testX;
+                                let distY = this.ball.y - testY;
+                                let distance = Math.sqrt((distX*distX) + (distY*distY));
+                                
+                                if (distance <= this.ball.radius) {
+                                    this.map.setBrickValue(0, r, c);
+                                    this.score += 5;
+                                    this.bricksBrokenThisLevel++;
+                                    
+                                    // Speed up every 7 bricks
+                                    if (this.bricksBrokenThisLevel % 7 === 0) {
+                                        this.ball.increaseSpeed();
+                                    }
+                                    
+                                    playSound('brickBreak');
+                                    
+                                    // Bounce logic
+                                    if (testX === bX || testX === bX + this.map.brickWidth) {
+                                        this.ball.dx = -this.ball.dx;
+                                    } else {
+                                        this.ball.dy = -this.ball.dy;
+                                    }
+                                    break brickLoop;
+                                }
+                            }
+                        }
+                    }
+
+                    // Bottom boundary / Life Lost
+                    if (this.ball.y > CONSTANTS.WINDOW_HEIGHT) {
+                        this.lives--;
+                        playSound('lifeLost');
+                        if (this.lives <= 0) {
+                            this.state = STATE.GAME_OVER;
+                            if (this.score > this.bestScore) {
+                                this.bestScore = this.score;
+                                localStorage.setItem('brickBreakerBestScore', this.bestScore);
+                            }
+                            playSound('gameOver');
+                        } else {
+                            this.ball.reset(this.paddle.x, this.paddle.width);
+                        }
+                    }
+
+                    // Level complete check
+                    if (this.map.totalBricks <= 0) {
+                        if (this.level >= 3) {
+                            this.state = STATE.WIN;
+                            if (this.score > this.bestScore) {
+                                this.bestScore = this.score;
+                                localStorage.setItem('brickBreakerBestScore', this.bestScore);
+                            }
+                            playSound('levelComplete');
+                        } else {
+                            this.state = STATE.LEVEL_COMPLETE;
+                            playSound('levelComplete');
+                        }
+                    }
+                }
+            }
+
+            draw() {
+                // Clear the canvas each frame
+                this.ctx.clearRect(0, 0, CONSTANTS.WINDOW_WIDTH, CONSTANTS.WINDOW_HEIGHT);
+
+                // Draw HUD (Top dark bar)
+                this.ctx.fillStyle = '#111';
+                this.ctx.fillRect(0, 0, CONSTANTS.WINDOW_WIDTH, 30);
+                
+                this.ctx.fillStyle = '#FFF';
+                this.ctx.font = '12px "Press Start 2P"';
+                this.ctx.textAlign = 'left';
+                this.ctx.fillText(`Score: ${this.score}`, 10, 22);
+                
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText(`Level: ${this.level}`, CONSTANTS.WINDOW_WIDTH / 2, 22);
+                
+                let livesText = "";
+                for (let i = 0; i < this.lives; i++) livesText += "♥ ";
+                this.ctx.fillStyle = '#FF4444';
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText(livesText, CONSTANTS.WINDOW_WIDTH - 10, 22);
+
+                if (this.state === STATE.START) {
+                    this.drawOverlay();
+                    this.ctx.fillStyle = '#FFFF00';
+                    this.ctx.font = '40px "Press Start 2P"';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText('BRICK BREAKER', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 - 20);
+                    
+                    // Blinking text
+                    if (Math.floor(Date.now() / 500) % 2 === 0) {
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = '16px "Press Start 2P"';
+                        this.ctx.fillText('Press Enter to Start', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 40);
+                    }
+                } else {
+                    if (this.map) this.map.draw(this.ctx);
+                    this.paddle.draw(this.ctx);
+                    this.ball.draw(this.ctx);
+
+                    if (this.state === STATE.PLAYING && this.ball.stuck) {
+                        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                        this.ctx.font = '12px "Press Start 2P"';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText('Press SPACE to launch', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.PADDLE_Y - 40);
+                    }
+
+                    if (this.state === STATE.PAUSED) {
+                        this.drawOverlay();
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = '30px "Press Start 2P"';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText('PAUSED', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2);
+                        this.ctx.font = '12px "Press Start 2P"';
+                        this.ctx.fillText('Press P to continue', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 40);
+                    } else if (this.state === STATE.GAME_OVER) {
+                        this.drawOverlay();
+                        this.ctx.fillStyle = '#FF0000';
+                        this.ctx.font = '40px "Press Start 2P"';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText('GAME OVER', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 - 40);
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = '16px "Press Start 2P"';
+                        this.ctx.fillText(`Score: ${this.score}`, CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2);
+                        this.ctx.fillStyle = '#FFFF00';
+                        this.ctx.fillText(`Best Score: ${this.bestScore}`, CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 30);
+                        this.ctx.fillStyle = '#AAAAAA';
+                        this.ctx.font = '12px "Press Start 2P"';
+                        this.ctx.fillText('Press Enter to Restart', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 70);
+                    } else if (this.state === STATE.LEVEL_COMPLETE) {
+                        this.drawOverlay();
+                        this.ctx.fillStyle = '#00FF88';
+                        this.ctx.font = '30px "Press Start 2P"';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText(`LEVEL ${this.level} COMPLETE!`, CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 - 20);
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = '14px "Press Start 2P"';
+                        this.ctx.fillText('Press Enter for Next Level', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 30);
+                    } else if (this.state === STATE.WIN) {
+                        this.drawOverlay();
+                        this.ctx.fillStyle = '#FFD700'; // Gold
+                        this.ctx.font = '30px "Press Start 2P"';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText('YOU BEAT THE GAME!', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 - 30);
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = '16px "Press Start 2P"';
+                        this.ctx.fillText(`Final Score: ${this.score}`, CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 20);
+                        this.ctx.fillStyle = '#AAAAAA';
+                        this.ctx.font = '12px "Press Start 2P"';
+                        this.ctx.fillText('Press Enter to Play Again', CONSTANTS.WINDOW_WIDTH / 2, CONSTANTS.WINDOW_HEIGHT / 2 + 60);
+                    }
+                }
+            }
+
+            drawOverlay() {
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                this.ctx.fillRect(0, 0, CONSTANTS.WINDOW_WIDTH, CONSTANTS.WINDOW_HEIGHT);
+            }
+
+            loop() {
+                this.update();
+                this.draw();
+                requestAnimationFrame(this.loop);
+            }
+        }
+
+        // Initialize and start the Game
+        const canvas = document.getElementById('gameCanvas');
+        const game = new Game(canvas);
+
+    </script>
+</body>
+</html>
