@@ -463,23 +463,7 @@
                     }
                 });
 
-                // Canvas touchmove for swipe-to-move
-                this.canvas.addEventListener('touchmove', (e) => {
-                    e.preventDefault(); // Stop scrolling
-                    if (this.state !== STATE.PLAYING) return;
-                    
-                    const touch = e.touches[0];
-                    const rect = this.canvas.getBoundingClientRect();
-                    const scaleX = this.canvas.width / rect.width;
-                    let x = (touch.clientX - rect.left) * scaleX;
-                    
-                    this.paddle.x = x - this.paddle.width / 2;
-                    
-                    if (this.paddle.x < 0) this.paddle.x = 0;
-                    if (this.paddle.x > CONSTANTS.WINDOW_WIDTH - this.paddle.width) {
-                        this.paddle.x = CONSTANTS.WINDOW_WIDTH - this.paddle.width;
-                    }
-                }, { passive: false });
+
 
                 // On-screen touch buttons
                 const btnLeft = document.getElementById('btnLeft');
